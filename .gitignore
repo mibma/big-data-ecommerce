@@ -1,0 +1,17 @@
+venv/
+*.zip
+__pycache__/
+*.pyc
+data/
+*.csv
+*.parquet
+*.json
+*.log
+hdfs/
+*.h5
+*.db
+*.sqlite
+*.png
+*.jpg
+*.jpeg
+cache/
