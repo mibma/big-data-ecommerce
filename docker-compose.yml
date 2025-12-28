@@ -44,11 +44,15 @@ services:
 
 
   # ------------------ Hadoop (HDFS) --------------
+  # ------------------ Hadoop (HDFS) --------------
   namenode:
     image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
     container_name: namenode
     environment:
       - CLUSTER_NAME=ecommerce
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - HDFS_CONF_dfs_replication=1
+      - HDFS_CONF_dfs_namenode_rpc-address=namenode:9000
     ports:
       - "9870:9870"
       - "9000:9000"
@@ -60,6 +64,12 @@ services:
       - namenode
     environment:
       - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - HDFS_CONF_dfs_datadir=/hadoop/dfs/data
+      - HDFS_CONF_dfs_namenode_rpc-address=namenode:9000
+      - HDFS_CONF_dfs_namenode_servicerpc-address=namenode:9000
+      - HDFS_CONF_dfs_namenode_http-address=namenode:9870
+      - HDFS_CONF_dfs_replication=1
+
 
   # ------------------ Hive -----------------------
   hive-metastore:
@@ -85,7 +95,7 @@ services:
       - SPARK_MODE=master
       - SPARK_MASTER_HOST=spark-master
     volumes:
-      - ./:/app
+      - ./app:/app
     ports:
       - "7077:7077"     # Spark Master Port
       - "8080:8080"     # Spark Master Web UI
@@ -104,7 +114,7 @@ services:
     depends_on:
       - spark-master
     volumes:
-      - ./:/app
+      - ./app:/app
     ports:
       - "8081:8081"
     command: >
@@ -120,7 +130,7 @@ services:
     depends_on:
       - spark-master
     volumes:
-      - ./:/app
+      - ./app:/app 
     ports:
       - "8082:8082"
     command: >
@@ -130,18 +140,21 @@ services:
 
   # ------------------ Airflow ---------------------
   airflow:
-    image: apache/airflow:2.8.1
+    build: ./airflow
     container_name: airflow
     depends_on:
       - kafka
       - spark-master
+    command: standalone
     ports:
       - "8085:8080"
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
     volumes:
-      - ./airflow/dags:/opt/airflow/dags
-    command: standalone
-
-
+      - ./airflow/dags:/opt/airflow/dags        # DAGs
+      - ./app/spark_jobs:/opt/spark/jobs       # Your Spark job scripts
+      - /var/run/docker.sock:/var/run/docker.sock   # <--- ADD THIS
 volumes:
   mongo_data: {}
 
