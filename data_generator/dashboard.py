@@ -16,7 +16,8 @@ collections = {
     "products": db["products"],
     "warehouses": db["warehouses"],
     "couriers": db["couriers"],
-    "inventory": db["inventory"]
+    "inventory": db["inventory"],
+    "orders_archive_summary": db["orders_archive_summary"]  # added archive summary
 }
 
 # -----------------------------
@@ -29,11 +30,10 @@ REFRESH_RATE = 5
 st_autorefresh(interval=REFRESH_RATE * 1000, key="refresh")
 
 # -----------------------------
-# Helper: Load Collection
+# Load Mongo Collection
 # -----------------------------
 def load_collection(col):
-    df = pd.json_normalize(list(col.find()), sep="_")
-    return df
+    return pd.json_normalize(list(col.find()), sep="_")
 
 @st.cache_data(ttl=REFRESH_RATE)
 def fetch_all():
@@ -43,116 +43,144 @@ def fetch_all():
         "products": load_collection(collections["products"]),
         "couriers": load_collection(collections["couriers"]),
         "warehouses": load_collection(collections["warehouses"]),
-        "inventory": load_collection(collections["inventory"])
+        "inventory": load_collection(collections["inventory"]),
+        "orders_archive_summary": load_collection(collections["orders_archive_summary"])
     }
 
 data = fetch_all()
 df_orders = data["orders"]
-
-if df_orders.empty:
-    st.warning("No orders found yet!")
-    st.stop()
-
 df_products = data["products"]
+df_couriers = data["couriers"]
+df_wh = data["warehouses"]
+df_archive_summary = data["orders_archive_summary"]
 
-# -----------------------------
-# Preprocess Data
-# -----------------------------
-# Convert order time
-if "order_order_time" not in df_orders.columns:
-    st.error("❌ Missing 'order_order_time'. Your Mongo documents are not being flattened.")
-    st.write(df_orders.head())
+if df_orders.empty and df_archive_summary.empty:
+    st.warning("No orders found!")
     st.stop()
 
+# -----------------------------
+# Preprocess Fields
+# -----------------------------
+# Flatten order fields
 df_orders["order_time"] = pd.to_datetime(df_orders["order_order_time"])
+df_orders["order_total_amount"] = df_orders["order_total_amount"]
 
-# Ensure IDs are strings to merge safely
-df_products["product_id_str"] = df_products["_id"].astype(str) if "_id" in df_products.columns else df_products["product_id"].astype(str)
+# Extract delivery info safely
+df_orders["delivery_status"] = df_orders["delivery_status"]
+df_orders["delivery_courier_id"] = df_orders["delivery_courier_id"]
+
+# Flatten order_items
+order_items = df_orders.explode("order_items").reset_index(drop=True)
+items_df = pd.json_normalize(order_items["order_items"]).reset_index(drop=True)
+order_items = pd.concat([order_items, items_df], axis=1)
+
+# Convert product_id safely
+order_items["product_id"] = pd.to_numeric(order_items["product_id"], errors="coerce")
+order_items = order_items.dropna(subset=["product_id"])
+order_items["product_id"] = order_items["product_id"].astype(int)
+
+# Clean join keys
+df_products["product_id"] = df_products["product_id"].astype(int)
+df_couriers["courier_id"] = df_couriers["courier_id"].astype(int)
+df_wh["warehouse_id"] = df_wh["warehouse_id"].astype(int)
+
+# -----------------------------
+# Combine Archive Summary for KPIs
+# -----------------------------
+# Total archived orders and revenue
+arch_total_orders = df_archive_summary["total_orders"].sum() if not df_archive_summary.empty else 0
+arch_total_value = df_archive_summary["total_value"].sum() if not df_archive_summary.empty else 0
+
+# Live orders totals
+live_total_orders = len(df_orders)
+live_total_value = df_orders["order_total_amount"].sum() if not df_orders.empty else 0
+
+# Combine totals
+total_orders_combined = live_total_orders + arch_total_orders
+total_value_combined = live_total_value + arch_total_value
+avg_value_combined = total_value_combined / total_orders_combined if total_orders_combined > 0 else 0
+
+# Delivered/Pending only from live orders
+delivered_count = len(df_orders[df_orders["delivery_status"] == "Delivered"]) if not df_orders.empty else 0
+pending_count = len(df_orders[df_orders["delivery_status"] == "Pending"]) if not df_orders.empty else 0
 
 # -----------------------------
 # KPIs
 # -----------------------------
 col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Total Orders", len(df_orders))
-col2.metric("Total Revenue", f"${df_orders['order_total_amount'].sum():,.2f}")
-col3.metric("Avg Order Value", f"${df_orders['order_total_amount'].mean():,.2f}")
-col4.metric("Delivered Orders", len(df_orders[df_orders["delivery_status"] == "Delivered"]))
-col5.metric("Pending Orders", len(df_orders[df_orders["delivery_status"] == "Pending"]))
+col1.metric("Total Orders", total_orders_combined)
+col2.metric("Total Revenue", f"${total_value_combined:,.2f}")
+col3.metric("Avg Order Value", f"${avg_value_combined:,.2f}")
+col4.metric("Delivered", delivered_count)
+col5.metric("Pending", pending_count)
 
 # -----------------------------
-# Orders by Payment Type
+# Payment Type Chart
 # -----------------------------
-if "order_payment_type" in df_orders.columns:
-    pay = df_orders["order_payment_type"].value_counts().reset_index()
-    pay.columns = ["Payment Type", "Count"]
-    fig_pay = px.pie(pay, names="Payment Type", values="Count", title="Payment Breakdown")
-    st.plotly_chart(fig_pay, use_container_width=True)
+pay = df_orders["order_payment_type"].value_counts().reset_index()
+pay.columns = ["Payment Type", "Count"]
+fig_pay = px.pie(pay, names="Payment Type", values="Count", title="Payment Type Breakdown")
+st.plotly_chart(fig_pay, use_container_width=True)
 
 # -----------------------------
-# Top Products Sold
+# Top Selling Products
 # -----------------------------
-if "order_items" in df_orders.columns:
-    exploded = df_orders.explode("order_items")
-    items_df = pd.json_normalize(exploded["order_items"])
-    items_df["product_id"] = items_df["product_id"].astype(str)
+merged_items = order_items.merge(df_products, on="product_id", how="left")
+top_products = merged_items.groupby("name")["quantity"].sum() \
+    .reset_index().sort_values("quantity", ascending=False).head(10)
 
-    df_products_renamed = df_products.rename(columns={"name": "product_name"})
-    merged = pd.merge(
-        items_df,
-        df_products_renamed,
-        left_on="product_id",
-        right_on="product_id_str",
-        how="left"
-    ).dropna(subset=["product_name"])
-
-    if not merged.empty:
-        top_products = merged.groupby("product_name")["quantity"].sum().reset_index().sort_values("quantity", ascending=False).head(10)
-        fig_top = px.bar(top_products, x="product_name", y="quantity", text="quantity",
-                         title="Top 10 Products Sold")
-        fig_top.update_traces(marker_color="indianred", textposition="outside")
-        st.plotly_chart(fig_top, use_container_width=True)
+fig_top = px.bar(top_products, x="name", y="quantity", text="quantity",
+                 title="Top 10 Best Selling Products")
+st.plotly_chart(fig_top, use_container_width=True)
 
 # -----------------------------
 # Delivery Status Over Time
 # -----------------------------
-delivery = df_orders.groupby([pd.Grouper(key="order_time", freq="30min"), "delivery_status"]).size().reset_index(name="count")
-fig_delivery = px.line(delivery, x="order_time", y="count", color="delivery_status", title="📦 Delivery Status Over Time")
-st.plotly_chart(fig_delivery, use_container_width=True)
+# -----------------------------
+# Delivery Status Over Time
+# -----------------------------
+# Ensure order_time is datetime
+df_orders["order_time"] = pd.to_datetime(df_orders["order_order_time"])
+
+# Drop rows with missing delivery_status
+df_del_time = df_orders.dropna(subset=["delivery_status"])
+
+# Group by hour and delivery_status
+delivery_time = df_del_time.groupby(
+    [pd.Grouper(key="order_time", freq="1H"), "delivery_status"]
+).size().reset_index(name="count")
+
+# Sort by order_time
+delivery_time = delivery_time.sort_values("order_time")
+
+# Plot line chart
+fig_del = px.line(
+    delivery_time,
+    x="order_time",
+    y="count",
+    color="delivery_status",
+    markers=True,
+    title="Delivery Status Over Time"
+)
+st.plotly_chart(fig_del, use_container_width=True)
 
 # -----------------------------
-# Orders per Courier
+# Orders Per Courier
 # -----------------------------
-if "delivery_courier_id" in df_orders.columns:
-    courier_orders = df_orders.groupby("delivery_courier_id").size().reset_index(name="count")
-    
-    # Make types consistent
-    courier_orders["delivery_courier_id"] = courier_orders["delivery_courier_id"].astype(str)
-    df_couriers = data["couriers"].copy()
-    df_couriers["_id"] = df_couriers["_id"].astype(str)
-    
-    courier_orders = courier_orders.merge(df_couriers, left_on="delivery_courier_id", right_on="_id", how="left")
-    
-    fig_courier = px.bar(courier_orders, x="name", y="count", title="Orders per Courier")
-    st.plotly_chart(fig_courier, use_container_width=True)
+df_orders_clean_courier = df_orders.dropna(subset=["delivery_courier_id"]).copy()
+df_orders_clean_courier["delivery_courier_id"] = df_orders_clean_courier["delivery_courier_id"].astype(int)
+
+courier_orders = df_orders_clean_courier.groupby("delivery_courier_id").size().reset_index(name="count")
+courier_orders = courier_orders.merge(df_couriers, left_on="delivery_courier_id", right_on="courier_id")
+
+fig_courier = px.bar(courier_orders, x="name", y="count", title="Orders by Courier")
+st.plotly_chart(fig_courier, use_container_width=True)
 
 # -----------------------------
-# Orders per Warehouse
+# Orders Per Warehouse
 # -----------------------------
-if "order_items" in df_orders.columns:
-    exploded = df_orders.explode("order_items")
-    items_df = pd.json_normalize(exploded["order_items"])
-    items_df["product_id"] = items_df["product_id"].astype(str)
-    df_products_renamed = df_products.rename(columns={"name": "product_name"})
-    merged_wh = pd.merge(items_df, df_products_renamed, left_on="product_id", right_on="product_id_str", how="left")
-    
-    warehouse_orders = merged_wh.groupby("warehouse_id").size().reset_index(name="count")
-    
-    # Make types consistent
-    warehouse_orders["warehouse_id"] = warehouse_orders["warehouse_id"].astype(str)
-    df_warehouses = data["warehouses"].copy()
-    df_warehouses["_id"] = df_warehouses["_id"].astype(str)
-    
-    warehouse_orders = warehouse_orders.merge(df_warehouses, left_on="warehouse_id", right_on="_id", how="left")
-    
-    fig_wh = px.bar(warehouse_orders, x="name", y="count", title="Orders per Warehouse")
-    st.plotly_chart(fig_wh, use_container_width=True)
+merged_wh = merged_items.merge(df_wh, on="warehouse_id", how="left")
+warehouse_orders = merged_wh.groupby("location").size().reset_index(name="count")
+
+fig_wh = px.bar(warehouse_orders, x="location", y="count", title="Orders by Warehouse")
+st.plotly_chart(fig_wh, use_container_width=True)
