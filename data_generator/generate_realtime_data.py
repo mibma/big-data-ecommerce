@@ -11,12 +11,10 @@ from kafka import KafkaProducer
 # Faker + Seeds
 # -------------------------------
 fake = Faker()
-Faker.seed(42)
 np.random.seed(42)
-random.seed(42)
 
 # -------------------------------
-# Kafka Producer
+# Kafka Producer (UNCHANGED)
 # -------------------------------
 producer = KafkaProducer(
     bootstrap_servers="127.0.0.1:9092",
@@ -33,7 +31,7 @@ NUM_WAREHOUSES = 5
 NUM_COURIERS = 10
 
 # -------------------------------
-# Dimension Tables (STATIC)
+# Dimension Tables (STATISTICAL)
 # -------------------------------
 
 users = pd.DataFrame([{
@@ -41,23 +39,26 @@ users = pd.DataFrame([{
     "name": fake.name(),
     "email": fake.email(),
     "location": fake.city(),
-    "age": random.randint(18, 70),
+    "age": int(np.clip(np.random.normal(35, 10), 18, 70)),  # Normal distribution
     "signup_date": fake.date_this_decade().isoformat()
 } for i in range(1, NUM_USERS + 1)])
 
 products = pd.DataFrame([{
     "product_id": i,
     "name": fake.word().capitalize(),
-    "category": random.choice(["Electronics", "Clothing", "Home", "Books", "Toys"]),
-    "price": round(random.uniform(500, 50000), 2),
-    "cost": round(random.uniform(300, 30000), 2),
-    "warehouse_id": random.randint(1, NUM_WAREHOUSES)
+    "category": np.random.choice(
+        ["Electronics", "Clothing", "Home", "Books", "Toys"],
+        p=[0.30, 0.25, 0.20, 0.15, 0.10]
+    ),
+    "price": round(np.random.lognormal(mean=8.5, sigma=0.6), 2),  # realistic pricing
+    "cost": round(np.random.lognormal(mean=8.2, sigma=0.5), 2),
+    "warehouse_id": np.random.randint(1, NUM_WAREHOUSES + 1)
 } for i in range(1, NUM_PRODUCTS + 1)])
 
 warehouses = pd.DataFrame([{
     "warehouse_id": i,
     "location": fake.city(),
-    "capacity": random.randint(1000, 5000),
+    "capacity": int(np.random.normal(3000, 800)),
     "manager_id": fake.random_number(digits=4)
 } for i in range(1, NUM_WAREHOUSES + 1)])
 
@@ -65,32 +66,33 @@ couriers = pd.DataFrame([{
     "courier_id": i,
     "name": fake.name(),
     "region": fake.city(),
-    "rating": round(random.uniform(2.5, 5.0), 1)
+    "rating": round(np.random.normal(4.2, 0.4), 1)
 } for i in range(1, NUM_COURIERS + 1)])
 
 # -------------------------------
-# ID Counters
+# Counters
 # -------------------------------
 order_id_counter = 1
 order_item_id_counter = 1
 delivery_id_counter = 1
 
 # -------------------------------
-# Order Generator
+# Order Generator (STATISTICAL)
 # -------------------------------
 def generate_order():
     global order_id_counter, order_item_id_counter, delivery_id_counter
 
     user = users.sample(1).iloc[0]
-    num_items = random.randint(1, 5)
     order_time = datetime.utcnow()
+
+    num_items = max(1, np.random.poisson(2))  # Most orders 1–3 items
 
     order_items = []
     total_amount = 0
 
     for _ in range(num_items):
         product = products.sample(1).iloc[0]
-        quantity = random.randint(1, 3)
+        quantity = max(1, np.random.poisson(1.5))
         price = product["price"]
 
         total_amount += price * quantity
@@ -106,7 +108,8 @@ def generate_order():
 
         order_item_id_counter += 1
 
-    discount = round(random.uniform(0, 0.2), 2)
+    # Discount → mostly small
+    discount = round(np.random.beta(2, 8), 2)
     total_amount = round(total_amount * (1 - discount), 2)
 
     order = {
@@ -116,17 +119,29 @@ def generate_order():
         "total_amount": total_amount,
         "discount": discount,
         "quantity": num_items,
-        "payment_type": random.choice(["Credit Card", "Cash", "Wallet"])
+        "payment_type": np.random.choice(
+            ["Credit Card", "Wallet", "Cash"],
+            p=[0.55, 0.30, 0.15]
+        )
     }
 
     courier = couriers.sample(1).iloc[0]
-    expected_time = order_time + timedelta(hours=random.randint(6, 72))
-    actual_time = expected_time + timedelta(minutes=random.randint(-30, 180))
+
+    expected_time = order_time + timedelta(
+        hours=int(np.random.normal(36, 12))
+    )
+
+    actual_time = expected_time + timedelta(
+        minutes=int(np.random.normal(15, 30))
+    )
 
     delivery = {
         "delivery_id": delivery_id_counter,
         "order_id": order_id_counter,
-        "status": random.choice(["Pending", "Shipped", "Delivered"]),
+        "status": np.random.choice(
+            ["Pending", "Shipped", "Delivered"],
+            p=[0.2, 0.3, 0.5]
+        ),
         "expected_time": expected_time.isoformat(),
         "actual_time": actual_time.isoformat(),
         "courier_id": int(courier["courier_id"])
@@ -138,26 +153,20 @@ def generate_order():
     return order, order_items, delivery
 
 # -------------------------------
-# Streaming Loop
+# Streaming Loop (UNCHANGED)
 # -------------------------------
-print("🚀 Faker-based Kafka streaming started...")
+print("🚀 Kafka streaming with statistical data started...")
 
 while True:
-    # Generate order
     order, order_items, delivery = generate_order()
 
-    # Combine into one message
-    combined_message = {
+    producer.send("orders", {
         "order": order,
         "order_items": order_items,
         "delivery": delivery
-    }
+    })
 
-    # Send the combined message to the "orders" topic
-    producer.send("orders", combined_message)
-    producer.flush()  # ensure it's sent
-
-    print(f"✅ Order {order['order_id']} pushed to Kafka")
+    producer.flush()
+    print(f"✅ Order {order['order_id']} sent to Kafka ")
 
     time.sleep(1)
-

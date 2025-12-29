@@ -136,24 +136,22 @@ st.plotly_chart(fig_top, use_container_width=True)
 # -----------------------------
 # Delivery Status Over Time
 # -----------------------------
-# -----------------------------
-# Delivery Status Over Time
-# -----------------------------
-# Ensure order_time is datetime
-df_orders["order_time"] = pd.to_datetime(df_orders["order_order_time"])
+# DELIVERY STATUS OVER TIME
 
-# Drop rows with missing delivery_status
+# Already flattened, just convert to datetime
+df_orders["order_time"] = pd.to_datetime(df_orders["order_order_time"])
+df_orders["delivery_status"] = df_orders["delivery_status"]
+
+# Remove rows with missing status
 df_del_time = df_orders.dropna(subset=["delivery_status"])
 
-# Group by hour and delivery_status
+# Group by hour
 delivery_time = df_del_time.groupby(
     [pd.Grouper(key="order_time", freq="1H"), "delivery_status"]
 ).size().reset_index(name="count")
 
-# Sort by order_time
 delivery_time = delivery_time.sort_values("order_time")
 
-# Plot line chart
 fig_del = px.line(
     delivery_time,
     x="order_time",
@@ -162,6 +160,7 @@ fig_del = px.line(
     markers=True,
     title="Delivery Status Over Time"
 )
+
 st.plotly_chart(fig_del, use_container_width=True)
 
 # -----------------------------

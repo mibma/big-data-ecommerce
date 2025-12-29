@@ -1,5 +1,9 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, to_date, current_date, sum as _sum, avg as _avg, min as _min, max as _max, count as _count
+from pyspark.sql.functions import (
+    col, to_date, current_date,
+    sum as _sum, avg as _avg, min as _min, max as _max, count as _count,
+    lit
+)
 
 # -----------------------------
 # CONFIGURATION
@@ -11,7 +15,7 @@ ARCHIVE_SUMMARY_COLLECTION = "orders_archive_summary"
 
 HDFS_ARCHIVE_PATH = "hdfs://namenode:9000/ecommerce/orders_archive/"
 ARCHIVE_DAYS = 1
-MAX_SIZE_MB = 300  # Max size before forcing archive
+MAX_SIZE_MB = 5  # Max size before forcing archive
 
 # -----------------------------
 # SPARK SESSION
@@ -25,7 +29,7 @@ spark = SparkSession.builder \
 spark.sparkContext.setLogLevel("WARN")
 
 # -----------------------------
-# LOAD DATA FROM MONGODB (ONLY orders)
+# LOAD DATA FROM MONGODB
 # -----------------------------
 df_orders = spark.read \
     .format("mongodb") \
@@ -49,6 +53,7 @@ df_size_mb = df_size_bytes / (1024 * 1024)
 # DECIDE WHICH ROWS TO ARCHIVE
 # -----------------------------
 if df_old.count() > 0 or df_size_mb > MAX_SIZE_MB:
+
     df_to_archive = df_old if df_old.count() > 0 else df_orders
     count = df_to_archive.count()
     print(f"Archiving {count} records to HDFS... (DataFrame size: {df_size_mb:.2f} MB)")
@@ -64,9 +69,9 @@ if df_old.count() > 0 or df_size_mb > MAX_SIZE_MB:
     print(f"Archived to HDFS at: {HDFS_ARCHIVE_PATH}")
 
     # -----------------------------
-    # MARK RECORDS AS ARCHIVED IN MONGO
+    # MARK RECORDS AS ARCHIVED IN MONGO (this is temporary)
     # -----------------------------
-    df_to_update = df_to_archive.withColumn("archived", col("_id").isNotNull())
+    df_to_update = df_to_archive.withColumn("archived", lit(True))
     df_to_update.write \
         .format("mongodb") \
         .mode("append") \
@@ -77,7 +82,7 @@ if df_old.count() > 0 or df_size_mb > MAX_SIZE_MB:
     print(f"Marked {count} records as archived in MongoDB.")
 
     # -----------------------------
-    # CREATE SUMMARY AND APPEND TO NEW MONGO COLLECTION
+    # CREATE SUMMARY AND APPEND TO NEW COLLECTION
     # -----------------------------
     df_summary = df_to_archive.agg(
         _count("_id").alias("total_orders"),
@@ -85,12 +90,8 @@ if df_old.count() > 0 or df_size_mb > MAX_SIZE_MB:
         _avg("order.total_amount").alias("avg_value"),
         _min("order.total_amount").alias("min_value"),
         _max("order.total_amount").alias("max_value")
-    )
+    ).withColumn("archive_date", current_date())
 
-    # Add archive_date for reference
-    df_summary = df_summary.withColumn("archive_date", current_date())
-
-    # Write summary to MongoDB
     df_summary.write \
         .format("mongodb") \
         .mode("append") \
@@ -100,18 +101,28 @@ if df_old.count() > 0 or df_size_mb > MAX_SIZE_MB:
 
     print(f"Appended archive summary to MongoDB collection '{ARCHIVE_SUMMARY_COLLECTION}'.")
 
-    # -----------------------------
-    # REMOVE ARCHIVED ROWS FROM ORDERS COLLECTION
-    # -----------------------------
-    df_to_keep = df_orders.filter(col("archived") != True)
-    df_to_keep.write \
+    # -------------------------------------------------------------
+    # REMOVE ARCHIVED ROWS FROM MAIN COLLECTION (YOUR FIXED VERSION)
+    # -------------------------------------------------------------
+    # Mark archived rows
+    df_to_archive_flagged = df_to_archive.withColumn("archived", lit(True))
+
+    # Mark remaining rows as active
+    df_to_keep_flagged = df_orders.join(df_to_archive.select("_id"), "_id", "left_anti") \
+                                  .withColumn("archived", lit(False))
+
+    # Combine both datasets
+    df_final = df_to_keep_flagged.unionByName(df_to_archive_flagged, allowMissingColumns=True)
+
+    # Overwrite the Mongo collection with final version
+    df_final.write \
         .format("mongodb") \
         .mode("overwrite") \
         .option("database", MONGO_DB) \
         .option("collection", MONGO_COLLECTION) \
         .save()
 
-    print(f"Deleted archived rows from MongoDB collection '{MONGO_COLLECTION}'.")
+    print(f"Overwritten MongoDB collection '{MONGO_COLLECTION}' with updated archived flags.")
 
 else:
     print(f"No records to archive. (DataFrame size: {df_size_mb:.2f} MB)")
