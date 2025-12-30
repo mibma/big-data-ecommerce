@@ -4,7 +4,7 @@
 
 <!-- ARCHITECTURE IMAGE PLACEHOLDER -->
 
-📌 **Insert Architecture Diagram Here**
+📌 **Architecture Diagram**
 *<img width="1247" height="710" alt="image" src="https://github.com/user-attachments/assets/ca8d50af-e1ba-4943-a039-b7dad7d2babe" />*
 
 </div>
