@@ -222,39 +222,11 @@ Open:
 
 ---
 
-# 📊 Dashboard Outputs
-
-Include images here:
-
-```
-![KPI Section](docs/kpi.png)
-![Delivery Timeline](docs/delivery_chart.png)
-![Top Products](docs/top_products.png)
-```
-
----
-
 # 🧠 How the System Works (Pipeline Flow)
 
 ```
 Data Generator → MongoDB → Archive Job → HDFS/Summary → Streamlit Dashboard
 ```
-
----
-
-# 💡 How You Can Improve This Project
-
-### 🔹 1. Add Kafka + Spark Structured Streaming
-
-Convert the generator into a Kafka producer -> Spark consumer pipeline.
-
-### 🔹 2. Add Delta Lake to HDFS
-
-Better schema enforcement + ACID.
-
-### 🔹 3. Shift MongoDB to a sharded cluster
-
-Scale beyond millions of orders.
 
 ### 🔹 4. Add Airflow DAGs
 
